@@ -1,12 +1,12 @@
 name: 카카오 언론보도 수집 트리거
 
 # 10분마다 Vercel 수집 API 를 깨운다.
-# 이 저장소에는 코드도 데이터도 없다. 스케줄러 역할만 한다.
-# 대상 주소는 저장소 시크릿 WATCH_URL 에 들어있어서 공개 저장소여도 노출되지 않는다.
+# 이 저장소에는 코드도 수집 데이터도 없다. 스케줄러 역할만 한다.
+# 대상 주소는 저장소 시크릿 WATCH_URL 에 있어서 공개 저장소여도 노출되지 않는다.
 on:
   schedule:
     - cron: '*/10 * * * *'
-  workflow_dispatch:        # 수동 실행 버튼
+  workflow_dispatch:
 
 concurrency:
   group: kmw-ping
@@ -27,17 +27,20 @@ jobs:
           fi
           # 콜드스타트 대비로 넉넉히 기다리고, 실패하면 두 번 더 시도한다.
           for i in 1 2 3; do
-            body=$(curl -s -m 120 --fail "$WATCH_URL" 2>/dev/null) && break
-            echo "시도 $i 실패, 15초 후 재시도"; sleep 15
+            curl -s -m 120 --fail "$WATCH_URL" -o resp.json && break
+            echo "시도 $i 실패, 15초 후 재시도"
+            sleep 15
           done
-          if [ -z "$body" ]; then echo "::error::수집 API 호출 실패"; exit 1; fi
-          # 결과 요약만 로그에 남긴다 (기사 본문은 남기지 않는다)
-          echo "$body" | python3 -c "
-import json,sys,collections
-d=json.load(sys.stdin)
-a=d.get('articles',[])
-t=collections.Counter(x.get('tone') for x in a)
-print(f\"누적 {len(a)}건 | 신규 {d.get('collected')} | source {d.get('source')} | 저장 {d.get('persisted')}\")
-print(f\"  긍정 {t.get('긍정',0)} 중립 {t.get('중립',0)} 우려 {t.get('우려',0)}\")
-if d.get('error'): print('  API error:', d['error'])
-"
+          if [ ! -s resp.json ]; then echo "::error::수집 API 호출 실패"; exit 1; fi
+          # 결과 요약만 로그에 남긴다 (기사 제목이나 본문은 남기지 않는다)
+          python3 - resp.json <<'PYEOF'
+          import json, sys, collections
+          d = json.load(open(sys.argv[1], encoding='utf-8'))
+          a = d.get('articles', [])
+          t = collections.Counter(x.get('tone') for x in a)
+          print('누적 %d건 | 신규 %s | source %s | 저장 %s'
+                % (len(a), d.get('collected'), d.get('source'), d.get('persisted')))
+          print('  긍정 %d 중립 %d 우려 %d' % (t.get('긍정', 0), t.get('중립', 0), t.get('우려', 0)))
+          if d.get('error'):
+              print('  API error:', d['error'])
+          PYEOF
